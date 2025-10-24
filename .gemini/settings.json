@@ -1,0 +1,55 @@
+{
+  "mcpServers": {
+    "Playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
+   
+    "powershell-stdio": {
+      "command": "pwsh",
+      "args": [
+        "-File",
+        "C:/powershell/modules/mcp-powershell-server/src/servers/McpSTDIOServer.ps1"
+      ],
+      "envFile": "C:/powershell/modules/mcp-powershell-server/.env"
+    },
+    "wordpress-cli": {
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "C:/powershell/modules/mcp-powershell-server/src/servers/McpWPCLIServer.ps1"
+      ],
+      "envFile": "C:/powershell/modules/mcp-powershell-server/.env"
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "envFile": "C:/powershell/modules/mcp-powershell-server/.env"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+"huggingface": {
+  "command": "python",
+  "args": [
+    "C:\\PowerShell\\Modules\\MCP-Servers\\src\\servers\\huggingface_mcp.py"
+  ],
+  "env": {
+    "HF_TOKEN": "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"
+  }
+}
+  }
+}
