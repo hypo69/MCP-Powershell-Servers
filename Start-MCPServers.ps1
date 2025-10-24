@@ -15,14 +15,20 @@
 .PARAMETER ConfigPath
     Путь к директории с конфигурациями (по умолчанию: src/config)
     
+.PARAMETER Force
+    Принудительный запуск, игнорируя PID файл
+    
 .EXAMPLE
     .\Start-MCPServers.ps1
     
 .EXAMPLE
     .\Start-MCPServers.ps1 -StopServers
 
+.EXAMPLE
+    .\Start-MCPServers.ps1 -Force
+
 .NOTES
-    Version: 1.1.1
+    Version: 1.1.2
     Author: hypo69
     License: MIT (https://opensource.org/licenses/MIT)
     Copyright: @hypo69 - 2025
@@ -39,12 +45,15 @@ param(
     [string]$ConfigPath = 'src\config',
     
     [Parameter(Mandatory = $false)]
+    [switch]$Force,
+    
+    [Parameter(Mandatory = $false)]
     [switch]$Help
 )
 
 #region Global Variables
 
-$script:LauncherVersion = '1.1.1'
+$script:LauncherVersion = '1.1.2'
 $script:ServerProcesses = @{}
 $script:LogFile = Join-Path $env:TEMP 'mcp-launcher.log'
 $script:PidFile = Join-Path $env:TEMP 'mcp-servers.pid'
@@ -104,6 +113,7 @@ function Save-ServerPIDs {
             Write-Log "Информация о процессах сохранена в файл: $script:PidFile" -Level 'DEBUG'
         } else {
             Write-Log "Нет активных процессов для сохранения" -Level 'DEBUG'
+            Remove-PidFile
         }
     }
     catch {
@@ -113,26 +123,52 @@ function Save-ServerPIDs {
 
 function Load-ServerPIDs {
     try {
-        if (Test-Path $script:PidFile) {
-            $processData = Get-Content -Path $script:PidFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        if (-not (Test-Path $script:PidFile)) {
+            Write-Log "Файл PID не найден, процессы не загружены" -Level 'DEBUG'
+            return
+        }
+        
+        $processData = Get-Content -Path $script:PidFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        $loadedCount = 0
+        $deadCount = 0
+        
+        foreach ($property in $processData.PSObject.Properties) {
+            $serverName = $property.Name
+            $processId = $property.Value
             
-            foreach ($property in $processData.PSObject.Properties) {
-                $serverName = $property.Name
-                $processId = $property.Value
+            try {
+                # Проверка существования процесса
+                $process = Get-Process -Id $processId -ErrorAction Stop
                 
-                try {
-                    $process = Get-Process -Id $processId -ErrorAction Stop
+                # Двойная проверка - процесс найден и не завершился
+                if (-not $process.HasExited) {
                     $script:ServerProcesses[$serverName] = $process
                     Write-Log "Загружен процесс для $serverName : PID $processId" -Level 'DEBUG'
-                }
-                catch {
-                    Write-Log "Процесс $serverName (PID: $processId) не найден" -Level 'DEBUG'
+                    $loadedCount++
+                } else {
+                    Write-Log "Процесс $serverName (PID: $processId) завершен" -Level 'DEBUG'
+                    $deadCount++
                 }
             }
+            catch {
+                # Процесс не найден - это нормально, если был убит вручную
+                Write-Log "Процесс $serverName (PID: $processId) не найден (был убит вручную)" -Level 'DEBUG'
+                $deadCount++
+            }
+        }
+        
+        Write-Log "Загружено процессов: $loadedCount, мертвых: $deadCount" -Level 'INFO'
+        
+        # Если все процессы мертвые - очищаем файл PID
+        if ($loadedCount -eq 0 -and $deadCount -gt 0) {
+            Write-Log "Все сохраненные процессы мертвые, очистка PID файла" -Level 'WARNING'
+            Remove-PidFile
+            $script:ServerProcesses = @{}
         }
     }
     catch {
         Write-Log "Ошибка загрузки информации о процессах: $($_.Exception.Message)" -Level 'DEBUG'
+        Remove-PidFile
     }
 }
 
@@ -162,11 +198,13 @@ MCP PowerShell Server Launcher v$script:LauncherVersion
 ПАРАМЕТРЫ:
     -StopServers            Остановить все запущенные MCP серверы
     -ConfigPath <путь>      Путь к директории с конфигурациями
+    -Force                  Принудительный запуск (игнорировать PID файл)
     -Help                   Показать эту справку
 
 ПРИМЕРЫ:
     .\Start-MCPServers.ps1
     .\Start-MCPServers.ps1 -StopServers
+    .\Start-MCPServers.ps1 -Force
 
 ЗАПУСКАЕМЫЕ СЕРВЕРЫ:
     - powershell-stdio
@@ -204,10 +242,35 @@ function Find-ServerScript {
 
 function Test-ServerRunning {
     param([string]$ServerName)
-    if ($script:ServerProcesses.ContainsKey($ServerName)) {
-        $p = $script:ServerProcesses[$ServerName]
-        if ($p -and -not $p.HasExited) { return $true }
+    
+    if (-not $script:ServerProcesses.ContainsKey($ServerName)) {
+        return $false
     }
+    
+    $p = $script:ServerProcesses[$ServerName]
+    
+    # Проверка: объект существует, это процесс, и он не завершился
+    if ($p -and $p -is [System.Diagnostics.Process]) {
+        try {
+            # Попытка обновить информацию о процессе
+            $p.Refresh()
+            
+            if (-not $p.HasExited) {
+                return $true
+            } else {
+                Write-Log "Процесс $ServerName завершен" -Level 'DEBUG'
+                $script:ServerProcesses.Remove($ServerName)
+                return $false
+            }
+        }
+        catch {
+            # Процесс больше не существует
+            Write-Log "Процесс $ServerName не существует: $($_.Exception.Message)" -Level 'DEBUG'
+            $script:ServerProcesses.Remove($ServerName)
+            return $false
+        }
+    }
+    
     return $false
 }
 
@@ -281,17 +344,34 @@ function Stop-MCPServers {
 function Show-ServerStatus {
     Write-Host ''
     Write-Host '=== СТАТУС MCP СЕРВЕРОВ ===' -ForegroundColor Cyan
+    
+    if ($script:ServerProcesses.Count -eq 0) {
+        Write-Host '  (нет запущенных серверов)' -ForegroundColor Gray
+        return
+    }
+    
     $running = 0
+    $dead = 0
+    
     foreach ($s in $script:ServerProcesses.Keys) {
-        $p = $script:ServerProcesses[$s]
-        if ($p -and -not $p.HasExited) {
+        if (Test-ServerRunning -ServerName $s) {
+            $p = $script:ServerProcesses[$s]
             Write-Host "  ✓ $s (PID: $($p.Id))" -ForegroundColor Green
             $running++
         } else {
             Write-Host "  ✗ $s (остановлен)" -ForegroundColor Red
+            $dead++
         }
     }
+    
     Write-Host "Запущено серверов: $running / $($script:ServerProcesses.Count)" -ForegroundColor Yellow
+    
+    # Если все серверы мертвые - очистить
+    if ($running -eq 0 -and $dead -gt 0) {
+        Write-Log "Все серверы мертвые, очистка данных" -Level 'WARNING'
+        $script:ServerProcesses = @{}
+        Remove-PidFile
+    }
 }
 
 #endregion
@@ -332,13 +412,34 @@ try {
     if ($Help) { Show-Help; exit 0 }
     if ($StopServers) { Stop-MCPServers; exit 0 }
 
-    Load-ServerPIDs
-    if ($script:ServerProcesses.Count -gt 0) {
-        Write-Log "Сервера уже запущены" -Level 'WARNING'
+    # Если -Force, то удаляем PID файл и начинаем с чистого листа
+    if ($Force) {
+        Write-Log "Режим Force: игнорирование PID файла" -Level 'WARNING'
+        Remove-PidFile
+        $script:ServerProcesses = @{}
+    } else {
+        # Загружаем сохраненные PID
+        Load-ServerPIDs
+    }
+    
+    # Проверяем, есть ли живые серверы
+    $aliveCount = 0
+    foreach ($serverName in @($script:ServerProcesses.Keys)) {
+        if (Test-ServerRunning -ServerName $serverName) {
+            $aliveCount++
+        }
+    }
+    
+    if ($aliveCount -gt 0) {
+        Write-Log "Обнаружено $aliveCount запущенных серверов" -Level 'WARNING'
         Show-ServerStatus
+        Write-Host ""
+        Write-Host "Для перезапуска используйте: .\Start-MCPServers.ps1 -Force" -ForegroundColor Yellow
+        Write-Host "Для остановки используйте: .\Start-MCPServers.ps1 -StopServers" -ForegroundColor Yellow
         exit 1
     }
 
+    # Все процессы мертвые или их нет - запускаем
     if (-not (Start-AllServers)) { exit 1 }
 
     Write-Host "=== СЕРВЕРЫ УСПЕШНО ЗАПУЩЕНЫ ===" -ForegroundColor Green
@@ -353,8 +454,20 @@ try {
 
     while ($true) {
         Start-Sleep -Seconds 5
-        $alive = ($script:ServerProcesses.Values | Where-Object { $_ -and -not $_.HasExited }).Count
-        if ($alive -eq 0) { Write-Log "Все серверы завершены" -Level 'WARNING'; break }
+        
+        # Проверка живых серверов
+        $alive = 0
+        foreach ($serverName in @($script:ServerProcesses.Keys)) {
+            if (Test-ServerRunning -ServerName $serverName) {
+                $alive++
+            }
+        }
+        
+        if ($alive -eq 0) { 
+            Write-Log "Все серверы завершены" -Level 'WARNING'
+            Remove-PidFile
+            break 
+        }
     }
 }
 catch {
