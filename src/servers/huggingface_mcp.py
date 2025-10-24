@@ -185,7 +185,7 @@ class HuggingFaceMCPServer:
         """
         logger.info('Запуск MCP сервера HuggingFace')
         await self.server.run()
-                                                             
+
 
 async def main() -> None:
     """
