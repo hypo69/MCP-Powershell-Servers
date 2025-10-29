@@ -1,4 +1,4 @@
-## \file MCPServerLauncher.psd1
+## \
 # -*- coding: utf-8 -*-
 #! .pyenv/bin/pwsh
 
@@ -10,6 +10,7 @@
     Манифест модуля для автоматического запуска и управления MCP серверами
     
 .NOTES
+    File MCPServerLauncher.psd1
     Version: 1.0.1
     Author: hypo69
     License: MIT (https://opensource.org/licenses/MIT)
